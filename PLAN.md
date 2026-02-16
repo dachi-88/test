@@ -10,22 +10,124 @@ A mobile-first Progressive Web App (PWA) that allows Georgian Individual Entrepr
 
 ### 1.1 rs.ge (Georgian Revenue Service)
 
-**Official API Limitations:**
-- The only public SOAP/WSDL API is the **WayBill Service** (`https://services.rs.ge/WayBillService/WayBillService.asmx?WSDL`) — focused on transport documents, **not tax declarations**.
-- There is **no public REST or SOAP API** for filing monthly small business income tax declarations.
-- Open-source clients ([dimakura/rs.ge](https://github.com/dimakura/rs.ge), [RealJTG/rsge](https://github.com/RealJTG/rsge)) only wrap the WayBill service and system/dictionary operations.
-- The rs.ge downloads page (`eservices.rs.ge/app/Downloads`) provides downloadable tools but not a programmatic declaration submission API.
+#### 1.1.1 RSoAuth — Official OAuth Protocol (v1.0.1)
 
-**Authentication on rs.ge Portal:**
-- Login requires **username/password + SMS-based 2FA** (OTP sent to a Georgian phone number).
-- There is **no documented device ID mechanism** to persist sessions and skip 2FA on trusted devices. However, the web portal does use cookies/session tokens that could theoretically be reused within a browser context.
-- **Playwright/Puppeteer is the only viable approach** for declaration filing automation.
+rs.ge provides an **official OAuth-like authentication protocol** (source: `RSoAuth.html` from `eapi.rs.ge`). This is a proper API-based auth flow — **no Playwright needed for user identity verification**.
 
-**Strategy: Playwright with Persistent Browser Context**
-- Use Playwright's `browserContext.storageState()` to save cookies, localStorage, and sessionStorage after initial login+2FA.
-- On subsequent runs, restore the storage state to attempt session reuse.
-- If the session has expired, prompt the user for a new SMS OTP.
-- The persistent context effectively acts as a "device ID" — rs.ge recognizes the browser session.
+**OAuth Flow:**
+
+```
+┌──────────────┐     ┌──────────────┐     ┌──────────────┐
+│  Our PWA     │     │  rs.ge OAuth │     │  Our Server  │
+│  (Client)    │     │  Popup       │     │  (Backend)   │
+└──────┬───────┘     └──────┬───────┘     └──────┬───────┘
+       │                    │                    │
+       │ 1. User clicks     │                    │
+       │    <rs-login>      │                    │
+       │───────────────────>│                    │
+       │                    │                    │
+       │ 2. rs.ge popup     │                    │
+       │    opens, user     │                    │
+       │    logs in on      │                    │
+       │    rs.ge directly  │                    │
+       │                    │                    │
+       │ 3. callback fires  │                    │
+       │    with AuthKey    │                    │
+       │<───────────────────│                    │
+       │                    │                    │
+       │ 4. Send AuthKey    │                    │
+       │    to our server   │                    │
+       │────────────────────────────────────────>│
+       │                    │                    │
+       │                    │  5. Server calls   │
+       │                    │  oAuth.ashx with   │
+       │                    │  SecretKey+AuthKey  │
+       │                    │<───────────────────│
+       │                    │                    │
+       │                    │  6. Returns XML:   │
+       │                    │  TIN, Name, Type   │
+       │                    │───────────────────>│
+       │                    │                    │
+       │ 7. User verified   │                    │
+       │<────────────────────────────────────────│
+```
+
+**Client Side:**
+```html
+<script src="https://eservices.rs.ge/js/OAuth.js"></script>
+<rs-login callback="onCallBack" publickey="{Your-Public-Key}"></rs-login>
+```
+
+- `<rs-login>` button opens rs.ge auth popup — user authenticates directly on rs.ge
+- On success: callback receives `data.Authenticated = true` + `data.AuthKey`
+- On failure: `data.Authenticated = false` + `data.Response` (reason)
+- **AuthKey is single-use and valid for only 3 minutes**
+
+**Server Side:**
+```
+GET https://eservices.rs.ge/WebServices/oAuth.ashx?SecretKey={SecretKey}&AuthKey={AuthKey}
+```
+
+Returns XML:
+```xml
+<User>
+  <Authenticated>true</Authenticated>
+  <FullName>taxpayer name (Georgian)</FullName>
+  <PersNo>TIN / identification number</PersNo>
+  <PayerType>legal form</PayerType>
+  <Address>registered address</Address>
+</User>
+```
+
+**Registration:** Contact `api-support@rs.ge` to obtain PublicKey + SecretKey pair.
+
+**What RSoAuth gives us:**
+- Verified user identity (TIN, name, legal form) without storing rs.ge credentials
+- No need to handle rs.ge username/password ourselves
+- User authenticates on rs.ge's own domain (trust + security)
+
+**What RSoAuth does NOT give us:**
+- No API for filing declarations — Playwright still needed for that
+- No session token for ongoing portal access
+- Identity verification only, not portal automation
+
+#### 1.1.2 Two-Step SMS Auth & Trusted Devices (from `2_step_auth.pdf`)
+
+rs.ge supports a **Trusted Devices** mechanism that is critical for our Playwright strategy:
+
+**How Trusted Devices Work:**
+1. User enables two-step SMS auth in their rs.ge profile settings
+2. On first login from a new device: username + password + SMS OTP required
+3. After successful login, user can mark the device as **"trusted"** (უსაფრთხო)
+4. **Subsequent logins from trusted devices skip SMS 2FA entirely**
+5. Trusted devices are identified by: OS + Browser + User-Agent fingerprint
+6. Users can view and delete trusted devices from their settings
+
+**Implications for our architecture:**
+- Playwright's persistent browser context (cookies + localStorage + consistent User-Agent) acts as a **stable device fingerprint**
+- After initial setup with one SMS OTP, we register the Playwright browser as a trusted device
+- **All subsequent Playwright sessions reuse the trusted device — no SMS needed**
+- Only re-authentication required if: user revokes the device, or rs.ge expires the trust
+
+**Code Word (კოდური სიტყვა):**
+- rs.ge also has a "code word" recovery mechanism
+- If password + code word are both forgotten, reset requires visiting an RS service center in person
+
+#### 1.1.3 Hybrid Strategy: RSoAuth + Playwright with Trusted Device
+
+The optimal approach combines both discoveries:
+
+| Concern | Solution |
+|---------|----------|
+| **User identity verification** | RSoAuth (official OAuth — no credentials stored) |
+| **Declaration filing** | Playwright (no API exists for this) |
+| **Avoiding repeated SMS OTP** | Trusted Device registration via Playwright |
+| **User does NOT give us their rs.ge password** | RSoAuth for identity; Playwright session established once with user present |
+
+#### 1.1.4 Other rs.ge APIs
+
+- **WayBill SOAP API:** `https://services.rs.ge/WayBillService/WayBillService.asmx?WSDL` — transport documents only, not relevant for tax declarations
+- **Open-source clients:** [dimakura/rs.ge](https://github.com/dimakura/rs.ge) (Ruby), [RealJTG/rsge](https://github.com/RealJTG/rsge) (Python) — WayBill wrappers only
 
 **Declaration Form (Updated Dec 2024):**
 
@@ -125,6 +227,7 @@ A mobile-first Progressive Web App (PWA) that allows Georgian Individual Entrepr
 │                    CLIENT (PWA)                          │
 │  Next.js 14+ App Router · React · TailwindCSS           │
 │  Service Worker · Web Push · Installable (A2HS)         │
+│  + rs.ge OAuth.js (<rs-login> component)                │
 └──────────────────────┬──────────────────────────────────┘
                        │ HTTPS
                        ▼
@@ -132,20 +235,25 @@ A mobile-first Progressive Web App (PWA) that allows Georgian Individual Entrepr
 │                   API GATEWAY                            │
 │            Next.js API Routes / tRPC                     │
 │         Auth (NextAuth.js) · Rate Limiting               │
-└────┬──────────┬──────────────┬──────────────────────────┘
-     │          │              │
-     ▼          ▼              ▼
-┌─────────┐ ┌──────────┐ ┌──────────────────────────────┐
-│ BOG API │ │ TBC API  │ │   rs.ge Automation Service    │
-│ (REST)  │ │(PSD2 REST│ │   (Playwright on server)      │
-│ OAuth2  │ │ OAuth2)  │ │   Persistent browser context  │
-└─────────┘ └──────────┘ └──────────────────────────────┘
-                                      │
-                                      ▼
-                              ┌──────────────┐
-                              │   rs.ge Web  │
-                              │   Portal     │
-                              └──────────────┘
+└────┬──────────┬──────────┬──────────────────────────────┘
+     │          │          │
+     ▼          ▼          ▼
+┌─────────┐ ┌────────┐ ┌────────────────────────────────┐
+│ BOG API │ │TBC API │ │  rs.ge Integration Layer       │
+│ (REST)  │ │(PSD2)  │ │                                │
+│ OAuth2  │ │OAuth2  │ │  ┌──────────┐ ┌─────────────┐  │
+└─────────┘ └────────┘ │  │ RSoAuth  │ │ Playwright  │  │
+                        │  │ (identity│ │ (filing +   │  │
+                        │  │  verify) │ │  trusted    │  │
+                        │  │          │ │  device)    │  │
+                        │  └────┬─────┘ └──────┬──────┘  │
+                        └───────┼──────────────┼─────────┘
+                                │              │
+                                ▼              ▼
+                        ┌──────────────┐ ┌──────────────┐
+                        │ rs.ge OAuth  │ │ rs.ge Web    │
+                        │ Endpoint     │ │ Portal       │
+                        └──────────────┘ └──────────────┘
 ```
 
 ### 2.2 Technology Stack
@@ -183,10 +291,12 @@ A mobile-first Progressive Web App (PWA) that allows Georgian Individual Entrepr
 │ id           UUID PK  │
 │ email        TEXT      │
 │ phone        TEXT      │   ← Georgian phone for SMS OTP relay
-│ tin          TEXT      │   ← Tax Identification Number
-│ name_ka      TEXT      │   ← Name in Georgian
-│ name_en      TEXT      │
+│ tin          TEXT      │   ← PersNo from RSoAuth
+│ full_name    TEXT      │   ← FullName from RSoAuth (Georgian)
+│ payer_type   TEXT      │   ← PayerType from RSoAuth
+│ address      TEXT      │   ← Address from RSoAuth
 │ business_type TEXT     │   ← 'micro' | 'small'
+│ rsge_verified BOOL    │   ← RSoAuth identity confirmed
 │ created_at   TIMESTAMP│
 │ updated_at   TIMESTAMP│
 └──────────┬───────────┘
@@ -198,8 +308,8 @@ A mobile-first Progressive Web App (PWA) that allows Georgian Individual Entrepr
 │ id         UUID PK    │        │ id          UUID PK   │
 │ user_id    UUID FK    │        │ user_id     UUID FK   │
 │ bank       ENUM       │        │ storage_state JSONB   │  ← Playwright context
-│            (BOG|TBC)  │        │ rsge_username TEXT     │
-│ access_token TEXT     │        │ rsge_pass_enc TEXT     │  ← Encrypted
+│            (BOG|TBC)  │        │ device_trusted BOOL   │  ← Trusted device active?
+│ access_token TEXT     │        │ trusted_at  TIMESTAMP  │  ← When device was trusted
 │ refresh_token TEXT    │        │ last_login  TIMESTAMP  │
 │ consent_id TEXT       │        │ is_valid    BOOLEAN    │
 │ accounts   JSONB      │        │ updated_at  TIMESTAMP  │
@@ -246,16 +356,22 @@ A mobile-first Progressive Web App (PWA) that allows Georgian Individual Entrepr
     Email + Phone (Georgian number)
          │
          ▼
-[3] Enter TIN & Business Details
-    Auto-validate TIN via rs.ge SOAP API (get_name_from_tin)
+[3] Verify Identity via RSoAuth
+    ├── User clicks <rs-login> button in our PWA
+    ├── rs.ge popup opens → user logs in on rs.ge directly
+    ├── Callback returns AuthKey → sent to our server
+    ├── Server calls oAuth.ashx with SecretKey + AuthKey
+    ├── Receives: TIN (PersNo), FullName, PayerType, Address
+    └── User profile auto-populated — no credentials stored by us
          │
          ▼
-[4] Connect rs.ge Account
-    ├── Enter rs.ge username/password
-    ├── Playwright opens headless session → triggers SMS OTP
-    ├── User enters OTP in our app → relayed to Playwright
-    ├── Playwright completes login → saves storageState
-    └── Session persisted for future use
+[4] Connect rs.ge for Declaration Filing (one-time Playwright setup)
+    ├── Playwright opens rs.ge login page in server-side browser
+    ├── User enters credentials into rs.ge via a proxied secure view
+    ├── SMS OTP sent → user enters in our app → relayed to Playwright
+    ├── Playwright checks "Trust this device" checkbox
+    ├── storageState saved → device is now trusted
+    └── Future Playwright sessions skip SMS 2FA entirely
          │
          ▼
 [5] Connect Bank(s)
@@ -296,7 +412,7 @@ A mobile-first Progressive Web App (PWA) that allows Georgian Individual Entrepr
     └── Shows success screen with confirmation
 ```
 
-### 4.3 Session Management Strategy for rs.ge
+### 4.3 Session Management Strategy for rs.ge (Trusted Device)
 
 ```
                     ┌──────────────────┐
@@ -307,6 +423,7 @@ A mobile-first Progressive Web App (PWA) that allows Georgian Individual Entrepr
                     ┌────────▼─────────┐
                     │ Load saved       │
                     │ storageState     │
+                    │ (trusted device) │
                     └────────┬─────────┘
                              │
                     ┌────────▼─────────┐
@@ -323,27 +440,27 @@ A mobile-first Progressive Web App (PWA) that allows Georgian Individual Entrepr
           └───────┬──────┘    └────────┬────────┘
                   │                    │
                   │           ┌────────▼────────┐
-                  │           │ Auto-fill user/  │
-                  │           │ pass (encrypted) │
-                  │           │ Submit login     │
+                  │           │ Auto-fill login  │
+                  │           │ (encrypted creds)│
                   │           └────────┬────────┘
                   │                    │
-                  │           ┌────────▼────────┐
-                  │           │ SMS OTP sent     │
-                  │           │ Push notification│
-                  │           │ to user: "Enter  │
-                  │           │ OTP code"        │
-                  │           └────────┬────────┘
+                  │           ┌────────▼────────────────┐
+                  │           │ Trusted device?          │
+                  │           └────────┬────────────────┘
+                  │                    │
+                  │           ┌────────┴────────┐
+                  │     ┌─────▼─────┐    ┌─────▼──────┐
+                  │     │ YES:      │    │ NO:        │
+                  │     │ Login     │    │ SMS OTP    │
+                  │     │ succeeds  │    │ required → │
+                  │     │ without   │    │ prompt user│
+                  │     │ SMS OTP   │    │ re-trust   │
+                  │     └─────┬─────┘    └─────┬──────┘
+                  │           │                │
+                  │           └────────┬───────┘
                   │                    │
                   │           ┌────────▼────────┐
-                  │           │ User enters OTP  │
-                  │           │ in our app →     │
-                  │           │ relayed to       │
-                  │           │ Playwright       │
-                  │           └────────┬────────┘
-                  │                    │
-                  │           ┌────────▼────────┐
-                  │           │ Save new         │
+                  │           │ Update saved     │
                   │           │ storageState     │
                   │           └────────┬────────┘
                   │                    │
@@ -355,6 +472,13 @@ A mobile-first Progressive Web App (PWA) that allows Georgian Individual Entrepr
                   │ Fill + Submit   │
                   └─────────────────┘
 ```
+
+**Key insight:** With trusted device, the "SMS OTP required" path only triggers if:
+- User manually revoked the trusted device from rs.ge settings
+- rs.ge expired the trust (duration unknown — needs testing)
+- Browser fingerprint changed (Playwright context corruption)
+
+In the **happy path (95%+ of cases)**, login proceeds without SMS — making the "2 taps" promise achievable.
 
 ---
 
@@ -369,8 +493,15 @@ A mobile-first Progressive Web App (PWA) that allows Georgian Individual Entrepr
 
 ### Module 2: Onboarding
 - Multi-step form wizard (React Hook Form + Zod validation)
-- TIN validation via rs.ge SOAP (get_name_from_tin)
-- rs.ge account linking (credentials stored encrypted, AES-256-GCM)
+- **RSoAuth integration** (identity verification):
+  - Embed `https://eservices.rs.ge/js/OAuth.js` script
+  - `<rs-login>` component with PublicKey
+  - Server-side AuthKey→SecretKey exchange → XML user data
+  - Auto-populate TIN, name, legal form from rs.ge response
+- **rs.ge Playwright trusted device setup** (one-time):
+  - Guided session where user logs into rs.ge via Playwright
+  - One SMS OTP → mark device as trusted → storageState saved
+  - No rs.ge credentials stored long-term (only encrypted session state)
 - Bank OAuth flows (BOG + TBC)
 - Account selection UI
 
@@ -390,18 +521,29 @@ A mobile-first Progressive Web App (PWA) that allows Georgian Individual Entrepr
   - Aggregates across multiple bank connections
   - Returns: `{ total, cash, pos, bankTransfer, other }`
 
-### Module 4: rs.ge Automation Service (Playwright)
-- **Runs on a dedicated server** (not Vercel — needs browser binary)
+### Module 4: rs.ge Integration Service
+
+**4a. RSoAuth Module (identity — runs on Vercel):**
+- Serve OAuth.js script from rs.ge CDN
+- Handle AuthKey callback from client
+- Server-side call to `oAuth.ashx?SecretKey={}&AuthKey={}`
+- Parse XML response → extract TIN, FullName, PayerType, Address
+- Map to internal user profile
+
+**4b. Playwright Automation (filing — runs on dedicated server):**
 - Playwright with Chromium, persistent browser contexts per user
-- Encrypted credential storage (user's rs.ge login)
-- Session state management (save/restore `storageState`)
+- **Trusted device management:**
+  - On first setup: login + SMS OTP + "trust this device" checkbox
+  - Save storageState (cookies + localStorage + device fingerprint)
+  - On subsequent runs: login succeeds without SMS (trusted device)
+  - Monitor trust validity; alert user if re-auth needed
 - Declaration form automation:
   - Navigate to monthly declaration page
   - Fill columns 15, 18-21 (16, 17 are auto-calculated by rs.ge)
   - Handle Georgian-language form fields (field names mapped to constants)
   - Submit and capture confirmation number
 - Error handling: screenshot on failure, retry logic
-- SMS OTP relay: WebSocket channel between app and Playwright worker
+- SMS OTP relay (fallback only): WebSocket channel for rare re-auth cases
 
 ### Module 5: Declaration Engine
 - Fetches bank data → calculates turnover breakdown
@@ -431,10 +573,11 @@ A mobile-first Progressive Web App (PWA) that allows Georgian Individual Entrepr
 
 | Concern | Mitigation |
 |---------|------------|
-| rs.ge credentials at rest | AES-256-GCM encryption, key in env/vault, not in DB |
+| rs.ge credentials at rest | RSoAuth eliminates need to store credentials; Playwright storageState encrypted with AES-256-GCM |
 | Bank tokens | Encrypted at rest, short-lived access tokens, refresh flow |
 | Playwright browser context | Stored encrypted per user, isolated contexts |
-| SMS OTP relay | WebSocket with JWT auth, OTP never stored, forwarded in real-time |
+| SMS OTP relay | Only needed on first setup + rare re-auth; WebSocket with JWT, OTP never stored |
+| Trusted device state | storageState encrypted per user; isolated Playwright contexts; monitor for trust revocation |
 | Data in transit | TLS 1.3 everywhere |
 | Session hijacking | HTTP-only secure cookies, CSRF tokens |
 | Rate limiting | Per-user rate limits on filing endpoints |
@@ -483,13 +626,14 @@ A mobile-first Progressive Web App (PWA) that allows Georgian Individual Entrepr
 1. Next.js project scaffold with PWA support
 2. Database schema + Drizzle ORM setup
 3. Auth system (NextAuth.js)
-4. Onboarding flow UI (mobile-first)
-5. BOG OAuth2 integration + statement fetching
-6. Basic Playwright rs.ge automation (login + session persistence)
-7. Declaration form auto-fill + submission
-8. Dashboard showing current month status
+4. **RSoAuth integration** — identity verification via official rs.ge OAuth
+5. Onboarding flow UI (mobile-first)
+6. BOG OAuth2 integration + statement fetching
+7. **Playwright rs.ge automation with trusted device** (login + trust + session persistence)
+8. Declaration form auto-fill + submission
+9. Dashboard showing current month status
 
-**Deliverable:** Working app where a BOG user can file declarations via rs.ge
+**Deliverable:** Working app where a BOG user can verify identity via RSoAuth and file declarations via Playwright (trusted device — no SMS after setup)
 
 ### Phase 2: TBC + Polish
 9. TBC Open Banking (PSD2) integration
@@ -533,6 +677,8 @@ georgian-tax-pwa/
 │   │   │   ├── api/
 │   │   │   │   ├── trpc/[trpc]/      # tRPC handler
 │   │   │   │   ├── auth/[...nextauth]/ # NextAuth
+│   │   │   │   ├── rsge-oauth/        # RSoAuth server-side exchange
+│   │   │   │   │   └── route.ts      # POST: AuthKey+SecretKey → XML user
 │   │   │   │   ├── webhooks/
 │   │   │   │   │   ├── bog/          # BOG OAuth callback
 │   │   │   │   │   └── tbc/          # TBC OAuth callback
@@ -561,6 +707,7 @@ georgian-tax-pwa/
 │       │   │   ├── automation.ts     # Core Playwright automation
 │       │   │   ├── declaration.ts    # Declaration form filling
 │       │   │   ├── session.ts        # Session/context management
+│       │   │   ├── trusted-device.ts # Trusted device setup + verification
 │       │   │   └── fields.ts         # Georgian form field mappings
 │       │   ├── queue/
 │       │   │   ├── declaration.queue.ts
@@ -631,8 +778,9 @@ georgian-tax-pwa/
 | rs.ge changes HTML structure | High | Medium | Playwright selectors abstracted to config; screenshot-based monitoring; alert on failure |
 | rs.ge blocks automation | High | Low | Use realistic browser fingerprints; rate-limit to human-speed interactions; fallback to manual filing with pre-filled data |
 | Bank API access denied | High | Medium | Apply early for BOG bonline + TBC TPP registration; have manual bank statement upload as fallback |
-| SMS OTP delivery delay | Medium | Medium | Retry prompt; timeout + manual entry; consider partnership with Georgian telecom for SMS API |
-| Session expiry unpredictable | Medium | High | Always attempt session reuse first; gracefully handle re-auth; queue retries |
+| SMS OTP delivery delay | Medium | Low | Trusted device eliminates OTP for 95%+ of filings; fallback: retry prompt + manual entry |
+| Trusted device revoked/expired | Medium | Low | Monitor login outcomes; auto-detect untrusted state; prompt user for one-time re-auth |
+| Session expiry unpredictable | Medium | Medium | Trusted device reduces impact; always attempt session reuse first; graceful re-auth |
 | Data encryption key leak | Critical | Low | Use cloud KMS (e.g., AWS KMS / GCP KMS); rotate keys; minimal credential storage |
 | Regulatory changes to declaration form | Medium | Medium | Abstract form field mappings; monitor rs.ge announcements; versioned form definitions |
 
@@ -642,7 +790,8 @@ georgian-tax-pwa/
 
 - [ ] **BOG:** Register at [bonline.bog.ge/admin/api](https://bonline.bog.ge/admin/api/) — need a BOG business account
 - [ ] **TBC:** Register at [developers.tbcbank.ge](https://developers.tbcbank.ge) — apply for Open Banking TPP access
-- [ ] **rs.ge:** Create service user via SOAP API (for TIN validation only; declaration filing uses Playwright)
+- [ ] **rs.ge RSoAuth:** Contact `api-support@rs.ge` to obtain PublicKey + SecretKey pair for OAuth
+- [ ] **rs.ge Service User:** Create via SOAP API (for WayBill/TIN validation as secondary feature)
 - [ ] **Web Push:** Generate VAPID keys for push notifications
 - [ ] **Domain:** Register Georgian-friendly domain (.ge TLD recommended)
 
@@ -650,6 +799,8 @@ georgian-tax-pwa/
 
 ## Sources
 
+- **[rs.ge RSoAuth Protocol v1.0.1](https://eapi.rs.ge/Downloads/GetProtocolFile?fileName=RSoAuth.html&id=13)** — Official OAuth documentation (included in repo: `Rs.Ge Docs/RSoAuth.html`)
+- **[rs.ge Two-Step SMS Auth & Trusted Devices](https://eapi.rs.ge)** — Trusted device instructions (included in repo: `Rs.Ge Docs/2_step_auth.pdf`)
 - [rs.ge Revenue Service Portal](https://www.rs.ge/Home-en)
 - [rs.ge E-services](https://www.rs.ge/Eservices-en)
 - [dimakura/rs.ge Ruby Client](https://github.com/dimakura/rs.ge)
