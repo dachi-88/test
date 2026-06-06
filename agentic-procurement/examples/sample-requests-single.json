@@ -1,0 +1,14 @@
+{
+  "id": "REQ-2001",
+  "title": "Endpoint security software for engineering laptops",
+  "description": "Deploy EDR/antivirus across engineering fleet; processes device telemetry.",
+  "category": "software_saas",
+  "estimatedAmount": 38000,
+  "currency": "USD",
+  "quantity": 250,
+  "requestedBy": { "name": "Sam Ortiz", "email": "sam@acme.com", "department": "IT Security" },
+  "neededBy": "2026-09-01",
+  "urgency": "high",
+  "newSupplier": false,
+  "dataSensitivity": "confidential"
+}

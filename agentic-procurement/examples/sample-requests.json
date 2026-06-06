@@ -1,0 +1,41 @@
+[
+  {
+    "id": "REQ-1001",
+    "title": "Annual SaaS analytics platform subscription",
+    "description": "Renew/expand our product analytics platform for the data team, handling customer PII.",
+    "category": "software_saas",
+    "estimatedAmount": 84000,
+    "currency": "USD",
+    "quantity": 1,
+    "requestedBy": { "name": "Priya Shah", "email": "priya@acme.com", "department": "Data" },
+    "neededBy": "2026-08-01",
+    "urgency": "high",
+    "newSupplier": true,
+    "dataSensitivity": "pii"
+  },
+  {
+    "id": "REQ-1002",
+    "title": "Office standing desks",
+    "description": "Replacement standing desks for the new floor.",
+    "category": "facilities",
+    "estimatedAmount": 3200,
+    "currency": "USD",
+    "quantity": 8,
+    "requestedBy": { "name": "Marco Lee", "email": "marco@acme.com", "department": "Workplace" },
+    "urgency": "normal",
+    "dataSensitivity": "none"
+  },
+  {
+    "id": "REQ-1003",
+    "title": "Q3 brand campaign creative services",
+    "description": "Creative agency engagement for the Q3 product launch campaign.",
+    "category": "marketing",
+    "estimatedAmount": 22000,
+    "currency": "USD",
+    "requestedBy": { "name": "Dana Cole", "email": "dana@acme.com", "department": "Marketing" },
+    "neededBy": "2026-07-15",
+    "urgency": "normal",
+    "newSupplier": true,
+    "dataSensitivity": "internal"
+  }
+]
